@@ -9,7 +9,7 @@ const client = new Client({
 
 const OWNER_ID = '1298640383688970293';
 
-// Active dice games: channelId → game data
+// Active dice games
 const games = new Map();
 
 client.once('ready', () => {
@@ -21,15 +21,15 @@ client.on('messageCreate', async (message) => {
   const content = message.content.trim().toLowerCase();
   const channelId = message.channel.id;
 
-  // ─── Start dice game ───
+  // ─── DICE GAME ───
   if (content.startsWith('-dicegame')) {
     if (games.has(channelId)) {
-      return message.reply('Game already running. Finish or -stopdice first.');
+      return message.reply('A game is already running here. Finish or use -stopdice');
     }
 
     const opponent = message.mentions.users.first();
-    if (!opponent) return message.reply('Use: `-dicegame @user`');
-    if (opponent.id === message.author.id) return message.reply('Can\'t play yourself');
+    if (!opponent) return message.reply('Usage: `-dicegame @user`');
+    if (opponent.id === message.author.id) return message.reply('Cannot play against yourself');
 
     games.set(channelId, {
       p1: message.author,
@@ -41,7 +41,7 @@ client.on('messageCreate', async (message) => {
     });
 
     return message.channel.send(
-      `🎲 Dice game started\n` +
+      `🎲 Dice game started!\n` +
       `${message.author} vs ${opponent}\n` +
       `First turn: ${message.author}\n` +
       `Type \`-roll\` on your turn\n` +
@@ -49,14 +49,13 @@ client.on('messageCreate', async (message) => {
     );
   }
 
-  // ─── Stop game ───
   if (content === '-stopdice') {
     if (!games.has(channelId)) return;
     const game = games.get(channelId);
     const s1 = game.scores[game.p1.id];
     const s2 = game.scores[game.p2.id];
 
-    let result = `Game ended.\nFinal:\n${game.p1}: **${s1}**\n${game.p2}: **${s2}**\n`;
+    let result = `Game ended.\nFinal score:\n${game.p1}: **${s1}**\n${game.p2}: **${s2}**\n`;
     if (s1 > s2) result += `**${game.p1} wins**`;
     else if (s2 > s1) result += `**${game.p2} wins**`;
     else result += '**Draw**';
@@ -65,25 +64,17 @@ client.on('messageCreate', async (message) => {
     games.delete(channelId);
   }
 
-  // ─── Roll ───
   if (content.startsWith('-roll')) {
     const game = games.get(channelId);
     if (!game) return message.reply('No active game. Start with -dicegame @user');
 
     if (message.author.id !== game.turn) {
-      return message.reply(`Not your turn. Waiting for <@${game.turn}>`);
+      return message.reply(`Not your turn! Waiting for <@${game.turn}>`);
     }
 
     let d1 = Math.floor(Math.random() * 6) + 1;
     let d2 = Math.floor(Math.random() * 6) + 1;
-    let total = d1 + d2;
-
-    // Very subtle owner edge: ~20% chance to reroll once if total < 6
-    if (message.author.id === OWNER_ID && total < 6 && Math.random() < 0.20) {
-      d1 = Math.floor(Math.random() * 6) + 1;
-      d2 = Math.floor(Math.random() * 6) + 1;
-      total = d1 + d2;
-    }
+    const total = d1 + d2;
 
     game.scores[message.author.id] += total;
     game.round++;
@@ -92,11 +83,10 @@ client.on('messageCreate', async (message) => {
     msg += `**Scores:**\n${game.p1}: **${game.scores[game.p1.id]}**\n${game.p2}: **${game.scores[game.p2.id]}**`;
 
     if (total === 12) msg += '  🔥';
-    if (total <= 4)  msg += '  😬';
+    if (total <= 4) msg += '  😬';
 
     await message.channel.send(msg);
 
-    // Switch turn
     game.turn = message.author.id === game.p1.id ? game.p2.id : game.p1.id;
 
     if (game.round >= game.maxRounds) {
@@ -112,9 +102,10 @@ client.on('messageCreate', async (message) => {
     } else {
       await message.channel.send(`Next turn: <@${game.turn}> — type \`-roll\``);
     }
+    return;
   }
 
-  // ─── Coinflip (interactive choose heads/tails) ───
+  // ─── RIGGED INTERACTIVE COINFLIP ───
   if (content.startsWith('-coinflip')) {
     const opponent = message.mentions.users.first();
     if (!opponent) return message.reply('Usage: `-coinflip @user`');
@@ -123,12 +114,56 @@ client.on('messageCreate', async (message) => {
     await message.channel.send(
       `🪙 **Coinflip challenge**\n` +
       `${message.author} vs ${opponent}\n` +
-      `**Choose: Heads or Tails?** (reply in this channel)`
+      `Reply with **heads**, **tails**, or **dudd** in this channel (60 seconds)`
     );
 
-    // Note: full interactive logic would need collectors or separate handler
-    // For simplicity right now just send the prompt
-    // You can expand later with message collectors if needed
+    const filter = (m) =>
+      m.author.id === message.author.id &&
+      m.channel.id === channelId &&
+      !m.author.bot;
+
+    const collector = message.channel.createMessageCollector({
+      filter,
+      max: 1,
+      time: 60000,
+    });
+
+    collector.on('collect', async (reply) => {
+      const choice = reply.content.toLowerCase().trim();
+
+      const landed = Math.random() < 0.5 ? 'Heads' : 'Tails';
+
+      let winner;
+      let extra = '';
+
+      if (choice.includes('dudd') || choice.includes('dud') || choice.includes('nah') || choice.includes('nope')) {
+        winner = opponent;
+        extra = `You chose mercy (${choice}) → **${opponent} wins**`;
+      } else {
+        winner = message.author;
+        if (choice.includes('heads') || choice.includes('tails')) {
+          extra = `**${landed}** — You win! 👑`;
+        } else {
+          extra = `Invalid choice → you still win 👑`;
+        }
+      }
+
+      await reply.reply(
+        `Coin landed on **${landed}**\n` +
+        `**Winner: ${winner}**\n${extra}`
+      );
+
+      collector.stop();
+    });
+
+    collector.on('end', async (collected, reason) => {
+      if (reason === 'time' && collected.size === 0) {
+        await message.channel.send(
+          `No reply in time → **${message.author} wins** by default 👑`
+        );
+      }
+    });
+    return;
   }
 });
 
