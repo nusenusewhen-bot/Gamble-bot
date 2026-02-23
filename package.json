@@ -1,0 +1,16 @@
+{
+  "name": "rigged-gamble-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "engines": {
+    "node": "18.x"   // or 20.x — Railway supports recent versions
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3"   // or latest ^14.x
+  },
+  "author": "ghaithollah",
+  "license": "MIT"
+}
