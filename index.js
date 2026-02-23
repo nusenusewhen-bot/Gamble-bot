@@ -9,8 +9,8 @@ const client = new Client({
 
 const OWNER_ID = '1298640383688970293';
 
-// Simple in-memory points (resets on bot restart — for Railway free tier it's fine)
-const points = new Map();
+// Active games: channelId → { p1, p2, scores, turn, round }
+const games = new Map();
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -18,80 +18,108 @@ client.once('ready', () => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-  const content = message.content.toLowerCase().trim();
+  const content = message.content.trim().toLowerCase();
+  const channelId = message.channel.id;
 
-  if (content === '-roll') {
-    let total, d1, d2;
-
-    if (message.author.id === OWNER_ID) {
-      // Owner: biased toward higher rolls (realistic "hot hand")
-      // Weights: very low chance of trash, high chance of 8+
-      const weighted = weightedRandom([
-        { value: 2,  weight: 1 },
-        { value: 3,  weight: 2 },
-        { value: 4,  weight: 4 },
-        { value: 5,  weight: 8 },
-        { value: 6,  weight: 12 },
-        { value: 7,  weight: 15 },
-        { value: 8,  weight: 18 },
-        { value: 9,  weight: 16 },
-        { value: 10, weight: 14 },
-        { value: 11, weight: 10 },
-        { value: 12, weight: 8  }
-      ]);
-      total = weighted;
-      d1 = Math.floor(Math.random() * 6) + 1;
-      d2 = total - d1;
-      if (d2 < 1 || d2 > 6) d2 = 6; // keep it valid-looking
-    } else {
-      // Normal users: standard-ish dice (slight house edge, but looks fair)
-      d1 = Math.floor(Math.random() * 6) + 1;
-      d2 = Math.floor(Math.random() * 6) + 1;
-      total = d1 + d2;
+  // ─── Start game ───
+  if (content.startsWith('-dicegame')) {
+    if (games.has(channelId)) {
+      return message.reply('A game is already running in this channel. Wait for it to finish or use -stopdice');
     }
 
-    // Points: total + small bonus (owner gets ~30-50% more on average)
-    const earned = total + (message.author.id === OWNER_ID ? Math.floor(Math.random() * 3) + 2 : 0);
-    const userPoints = (points.get(message.author.id) || 0) + earned;
-    points.set(message.author.id, userPoints);
+    const opponent = message.mentions.users.first();
+    if (!opponent) return message.reply('Mention someone: `-dicegame @user`');
+    if (opponent.id === message.author.id) return message.reply('You can\'t play against yourself...');
 
-    const msg = `🎲 ${message.author} rolled **${d1} + ${d2} = ${total}**\nYou earned **${earned}** points\nYour total: **${userPoints}** points`;
+    games.set(channelId, {
+      p1: message.author,           // starter
+      p2: opponent,
+      scores: { [message.author.id]: 0, [opponent.id]: 0 },
+      turn: message.author.id,      // starter goes first
+      round: 0,
+      maxRounds: 15
+    });
+
+    return message.channel.send(
+      `🎲 Dice game started!\n` +
+      `${message.author} vs ${opponent}\n` +
+      `First to roll: ${message.author}\n` +
+      `Type \`-roll\` on your turn\n` +
+      `End with \`-stopdice\``
+    );
+  }
+
+  // ─── Stop game ───
+  if (content === '-stopdice') {
+    if (!games.has(channelId)) return;
+    const game = games.get(channelId);
+    const s1 = game.scores[game.p1.id];
+    const s2 = game.scores[game.p2.id];
+
+    let result = `Game ended.\nFinal score:\n${game.p1}: **${s1}**\n${game.p2}: **${s2}**\n`;
+    if (s1 > s2) result += `**${game.p1} wins!**`;
+    else if (s2 > s1) result += `**${game.p2} wins!**`;
+    else result += '**Draw**';
+
+    message.channel.send(result);
+    games.delete(channelId);
+  }
+
+  // ─── Roll ───
+  if (content === '-roll') {
+    const game = games.get(channelId);
+    if (!game) return message.reply('No active dice game here. Start one with -dicegame @user');
+
+    if (message.author.id !== game.turn) {
+      return message.reply(`Not your turn! Waiting for <@${game.turn}>`);
+    }
+
+    // Roll logic
+    let d1 = Math.floor(Math.random() * 6) + 1;
+    let d2 = Math.floor(Math.random() * 6) + 1;
+
+    // Owner hidden edge: 30% chance to reroll the lowest die once
+    if (message.author.id === OWNER_ID && Math.random() < 0.30) {
+      if (d1 <= d2) {
+        d1 = Math.floor(Math.random() * 6) + 1;
+      } else {
+        d2 = Math.floor(Math.random() * 6) + 1;
+      }
+    }
+
+    const total = d1 + d2;
+
+    // Add to score
+    game.scores[message.author.id] = (game.scores[message.author.id] || 0) + total;
+    game.round++;
+
+    // Show result
+    let msg = `**Round ${game.round}** — ${message.author} rolled **${d1} + ${d2} = ${total}**\n`;
+    msg += `**Scores:**\n${game.p1}: **${game.scores[game.p1.id]}**\n${game.p2}: **${game.scores[game.p2.id]}**`;
+
+    if (total === 12) msg += '  🔥';
+    if (total <= 4)  msg += '  😬';
 
     await message.channel.send(msg);
-  }
 
-  // Optional: check points
-  if (content === '-points') {
-    const userPoints = points.get(message.author.id) || 0;
-    await message.channel.send(`${message.author}, you have **${userPoints}** points.`);
-  }
+    // Switch turn
+    game.turn = message.author.id === game.p1.id ? game.p2.id : game.p1.id;
 
-  // Keep your coinflip if you want — or remove it
-  if (content.startsWith('-coinflip')) {
-    const mention = message.mentions.users.first();
-    if (!mention) return message.reply('Mention someone: `-coinflip @user`');
+    // Check end conditions
+    if (game.round >= game.maxRounds) {
+      const s1 = game.scores[game.p1.id];
+      const s2 = game.scores[game.p2.id];
+      let endMsg = `\n**Game over** (${game.maxRounds} rounds)\nFinal:\n${game.p1}: **${s1}** — ${game.p2}: **${s2}**\n`;
+      if (s1 > s2) endMsg += `**${game.p1} wins!**`;
+      else if (s2 > s1) endMsg += `**${game.p2} wins!**`;
+      else endMsg += '**Draw**';
 
-    let winner;
-    if (message.author.id === OWNER_ID || mention.id === OWNER_ID) {
-      winner = message.author.id === OWNER_ID ? message.author : mention;
+      await message.channel.send(endMsg);
+      games.delete(channelId);
     } else {
-      winner = Math.random() < 0.5 ? message.author : mention;
+      await message.channel.send(`Next turn: <@${game.turn}> — type \`-roll\``);
     }
-
-    await message.channel.send(`🪙 Coinflip: **${winner} wins!**`);
   }
 });
-
-// Helper: weighted random for owner rolls
-function weightedRandom(options) {
-  let sum = 0;
-  options.forEach(opt => sum += opt.weight);
-  let r = Math.random() * sum;
-  for (const opt of options) {
-    r -= opt.weight;
-    if (r <= 0) return opt.value;
-  }
-  return options[options.length - 1].value;
-}
 
 client.login(process.env.DISCORD_TOKEN);
